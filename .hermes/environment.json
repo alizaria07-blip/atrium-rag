@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "FastAPI app",
+    "kind": "fastapi",
+    "bootstrap": [
+      "./.venv/bin/python -c \"import fastapi, openai, numpy, pypdf, docx, markdown\""
+    ],
+    "build": [],
+    "test": [
+      ". .venv/bin/activate && python -m pytest -q"
+    ],
+    "start": "./.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000",
+    "port": 8000,
+    "readinessPath": "/",
+    "evidence": [
+      "Detected Python project",
+      "Detected FastAPI/Uvicorn dependency"
+    ]
+  },
+  "updatedAt": "2026-08-11T16:09:45.368996+00:00"
+}

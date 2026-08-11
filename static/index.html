@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local RAG</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1e2230; --border: #2a2f3e;
+    --text: #e7e9ee; --muted: #9aa1b2; --accent: #6c8cff; --accent2: #4f6bdb;
+    --good: #34d399; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+    height: 100vh; display: grid; grid-template-rows: auto 1fr;
+  }
+  header {
+    padding: 14px 22px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .status {
+    margin-left: auto; display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
+  .dot.ok { background: var(--good); }
+  main { display: grid; grid-template-columns: 340px 1fr; min-height: 0; }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px;
+  }
+  section h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; font-size: 13px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 7px;
+    padding: 9px 14px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  button:hover { background: var(--accent2); }
+  button.secondary { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+  .drop {
+    border: 2px dashed var(--border); border-radius: 9px; padding: 20px;
+    text-align: center; color: var(--muted); font-size: 13px; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.drag { border-color: var(--accent); background: rgba(108,140,255,.06); }
+  .doclist { display: flex; flex-direction: column; gap: 6px; }
+  .doc {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 10px; font-size: 13px;
+  }
+  .doc .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc .meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .doc .del { background: none; border: 0; color: var(--bad); cursor: pointer; font-size: 15px; padding: 0 2px; }
+  .empty { color: var(--muted); font-size: 12px; font-style: italic; }
+  .chat {
+    display: grid; grid-template-rows: 1fr auto; min-height: 0;
+  }
+  #messages { overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 78%; padding: 10px 13px; border-radius: 11px; white-space: pre-wrap; font-size: 14px; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; }
+  .msg.ai { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); }
+  .msg.err { align-self: flex-start; background: rgba(248,113,113,.12); border: 1px solid var(--bad); color: var(--bad); }
+  .sources { font-size: 11px; color: var(--muted); margin-top: 8px; }
+  .cursor { display: inline-block; width: 7px; background: var(--accent); animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .inputrow {
+    display: flex; gap: 10px; padding: 14px; border-top: 1px solid var(--border); background: var(--panel);
+  }
+  textarea {
+    flex: 1; resize: none; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px; padding: 11px 12px;
+    font-size: 14px; font-family: inherit; min-height: 46px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .spinner { display:inline-block; width:13px; height:13px; border:2px solid rgba(255,255,255,.35);
+    border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; vertical-align:-2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #notice {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 100; max-width: 640px; width: 90%; box-sizing: border-box;
+    background: #2a1b1b; color: #ffd7d7; border: 1px solid var(--bad);
+    padding: 11px 16px; border-radius: 9px; font-size: 13px; display: none;
+    box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  }
+  #notice .nclose { float: right; background: none; border: 0; color: var(--bad); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .noticefield { color: var(--bad); font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="notice"><button class="nclose" onclick="hideNotice()">×</button><span id="noticeMsg"></span></div>
+<header>
+  <h1>Local RAG</h1>
+  <span class="sub">Retrieval-augmented chat · documents are indexed locally</span>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not configured</span></div>
+</header>
+
+<main>
+  <aside>
+    <section>
+      <h2>Connection</h2>
+      <label for="baseUrl">API Base URL (OpenAI-compatible)</label>
+      <input type="text" id="baseUrl" placeholder="https://api.groq.com/openai/v1">
+      <label for="apiKey">API Key</label>
+      <input type="password" id="apiKey" placeholder="sk-… (stored in browser only)">
+      <label for="chatModel">Chat model</label>
+      <input type="text" id="chatModel" placeholder="gpt-4o-mini">
+      <label for="embedModel">Embedding model</label>
+      <input type="text" id="embedModel" placeholder="text-embedding-3-small">
+      <label for="topK">Top K retrieved chunks</label>
+      <input type="number" id="topK" min="1" max="20" value="5">
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button id="saveBtn">Save & Test</button>
+      </div>
+      <p style="font-size:11px; color:var(--muted); margin-top:8px;">
+        Works with vLLM, Groq, Together, OpenAI, or any /v1-compatible endpoint.
+      </p>
+    </section>
+
+    <section>
+      <h2>Documents</h2>
+      <div class="drop" id="drop">Drop files here or click to upload<br>PDF · DOCX · TXT · MD</div>
+      <input type="file" id="fileInput" multiple hidden>
+      <div class="doclist" id="docList"><span class="empty">No documents yet.</span></div>
+    </section>
+  </aside>
+
+  <div class="chat">
+    <div id="messages">
+      <div class="msg ai">Hi! Add your API connection and upload some documents, then ask me anything about them.</div>
+    </div>
+    <div class="inputrow">
+      <textarea id="question" rows="1" placeholder="Ask a question about your documents…"></textarea>
+      <button id="sendBtn">Send</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const DEFAULTS = {
+  base_url: "https://api.groq.com/openai/v1",
+  api_key: "",
+  chat_model: "gpt-4o-mini",
+  embed_model: "text-embedding-3-small",
+  top_k: 5,
+};
+let settings = loadSettings();
+
+function loadSettings() {
+  try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("rag_settings") || "{}") }; }
+  catch { return { ...DEFAULTS }; }
+}
+function persistSettings() {
+  settings = {
+    base_url: $("baseUrl").value.trim(),
+    api_key: $("apiKey").value.trim(),
+    chat_model: $("chatModel").value.trim() || DEFAULTS.chat_model,
+    embed_model: $("embedModel").value.trim() || DEFAULTS.embed_model,
+    top_k: parseInt($("topK").value, 10) || 5,
+  };
+  localStorage.setItem("rag_settings", JSON.stringify(settings));
+}
+function showNotice(msg) {
+  $("noticeMsg").innerHTML = msg;
+  $("notice").style.display = "block";
+}
+function hideNotice() { $("notice").style.display = "none"; }
+// Highlight a field in red when it's the reason settings are incomplete.
+function flagField(id) {
+  if (id) $(id).style.borderColor = "var(--bad)";
+}
+function unflagFields() {
+  ["baseUrl", "apiKey", "chatModel", "embedModel", "topK"].forEach(
+    id => { if ($(id)) $(id).style.borderColor = ""; }
+  );
+}
+// Returns an error string if settings are incomplete for a given action,
+// otherwise empty string. 'need' is a space-separated set of required fields.
+function validateSettings(need) {
+  const missing = [];
+  const checks = {
+    base_url: () => $("baseUrl").value.trim(),
+    api_key: () => $("apiKey").value.trim(),
+    embed_model: () => $("embedModel").value.trim(),
+    chat_model: () => $("chatModel").value.trim(),
+  };
+  for (const f of need.split(" ")) {
+    if (!checks[f] || !checks[f]()) missing.push(f);
+  }
+  if (!missing.length) return "";
+  const labels = {
+    base_url: "API Base URL", api_key: "API Key", embed_model: "Embedding model",
+    chat_model: "Chat model",
+  };
+  const keys = {"base_url": "baseUrl", "api_key": "apiKey",
+                "embed_model": "embedModel", "chat_model": "chatModel"};
+  unflagFields();
+  for (const f of missing) flagField(keys[f]);
+  return `Missing required setting${missing.length > 1 ? "s" : ""}: ` +
+         missing.map(f => `<b class="noticefield">${labels[f]}</b>`).join(", ") +
+         `. Fill them in above (and click <b>Save &amp; Test</b>), then try again.`;
+}
+function fillForm() {
+  $("baseUrl").value = settings.base_url;
+  $("apiKey").value = settings.api_key;
+  $("chatModel").value = settings.chat_model;
+  $("embedModel").value = settings.embed_model;
+  $("topK").value = settings.top_k;
+}
+fillForm();
+setStatus(settings.base_url && "Configured", !!settings.api_key);
+
+function setStatus(text, ok) {
+  $("statusText").textContent = text;
+  $("statusDot").classList.toggle("ok", !!ok);
+}
+
+async function testConnection(config) {
+  // Light check: hit the /models endpoint of the OpenAI-compatible server.
+  const c = new OpenAICompatible(config);
+  return await c.test();
+}
+class OpenAICompatible {
+  constructor(cfg) { this.cfg = cfg; }
+  base() { return this.cfg.base_url.replace(/\/+$/, ""); }
+  headers() {
+    const h = { "Content-Type": "application/json" };
+    if (this.cfg.api_key) h["Authorization"] = "Bearer " + this.cfg.api_key;
+    return h;
+  }
+  async test() {
+    const r = await fetch(this.base() + "/models", { headers: this.headers() });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return true;
+  }
+}
+
+$("saveBtn").addEventListener("click", async () => {
+  persistSettings();
+  $("saveBtn").innerHTML = '<span class="spinner"></span> Testing…';
+  $("saveBtn").disabled = true;
+  try {
+    await testConnection(settings);
+    setStatus("Connected", true);
+    alert("Connected OK ✓");
+  } catch (e) {
+    setStatus("Connection failed", false);
+    alert("Could not reach the API:\n" + e.message);
+  } finally {
+    $("saveBtn").textContent = "Save & Test";
+    $("saveBtn").disabled = false;
+  }
+});
+
+// ---- documents ----
+const drop = $("drop"), fileInput = $("fileInput");
+drop.addEventListener("click", () => fileInput.click());
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", e => handleFiles(e.dataTransfer.files));
+fileInput.addEventListener("change", () => { handleFiles(fileInput.files); fileInput.value = ""; });
+
+async function handleFiles(files) {
+  persistSettings();
+  const err = validateSettings("base_url api_key embed_model");
+  if (err) { showNotice(err); return; }
+  hideNotice();
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("settings", JSON.stringify({
+      base_url: settings.base_url,
+      api_key: settings.api_key,
+      embed_model: settings.embed_model,
+    }));
+    addDocItem({ name: file.name, chunks: null, status: "indexing" });
+    try {
+      const r = await fetch("/api/documents", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+      removeDocItemByName(file.name);
+      addDocItem(j.document);
+      setStatus("Connected", true);
+    } catch (e) {
+      removeDocItemByName(file.name);
+      addDocItem({ name: file.name, chunks: null, status: "failed: " + e.message });
+    }
+  }
+}
+function addDocItem(d) {
+  removeDocItemByName(d.name);
+  const row = document.createElement("div");
+  row.className = "doc"; row.dataset.name = d.name;
+  const meta = d.chunks != null ? d.chunks + " chunks" : d.status || "…";
+  row.innerHTML = `
+    <span class="name" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</span>
+    <span class="meta">${escapeHtml(meta)}</span>
+    <button class="del" title="Remove">×</button>`;
+  row.querySelector(".del").addEventListener("click", async () => {
+    if (d.id) { await fetch("/api/documents/" + d.id, { method: "DELETE" }); row.remove(); reconcileEmpty(); }
+    else row.remove();
+  });
+  $("docList").appendChild(row);
+  reconcileEmpty();
+}
+function removeDocItemByName(name) {
+  document.querySelectorAll(`.doc[data-name="${CSS.escape(name)}"]`).forEach(n => n.remove());
+}
+function reconcileEmpty() {
+  const list = $("docList");
+  if (!list.querySelector(".doc")) {
+    list.innerHTML = '<span class="empty">No documents yet.</span>';
+  }
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+async function refreshDocs() {
+  try {
+    const r = await fetch("/api/documents"); const j = await r.json();
+    j.documents.forEach(addDocItem);
+  } catch {}
+}
+refreshDocs();
+
+// ---- chat ----
+const msgs = $("messages"), q = $("question"), sendBtn = $("sendBtn");
+function addMsg(text, kind) {
+  const m = document.createElement("div");
+  m.className = "msg " + (kind || "ai");
+  m.textContent = text;
+  msgs.appendChild(m);
+  msgs.scrollTop = msgs.scrollHeight;
+  return m;
+}
+
+sendBtn.addEventListener("click", ask);
+q.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
+
+async function ask() {
+  const question = q.value.trim();
+  if (!question) return;
+  persistSettings();
+
+  const perr = validateSettings("base_url api_key embed_model chat_model");
+  if (perr) { showNotice(perr); sendBtn.disabled = false; return; }
+  hideNotice();
+
+  const userBubble = addMsg(question, "user");
+  q.value = "";
+  sendBtn.disabled = true;
+
+  const aiBubble = addMsg("▌", "ai");
+  const textNode = document.createTextNode("");
+  aiBubble.textContent = "";
+  aiBubble.appendChild(textNode);
+
+  const body = {
+    question,
+    history: buildHistory(),
+    settings: {
+      base_url: settings.base_url,
+      api_key: settings.api_key,
+      embed_model: settings.embed_model,
+      chat_model: settings.chat_model,
+      top_k: settings.top_k,
+    },
+  };
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const j = await resp.json();
+      throw new Error(j.detail || ("HTTP " + resp.status));
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "", sources = [], hadError = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n\n");
+      buf = lines.pop();
+      for (const frame of lines) {
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (ev.type === "delta") {
+            textNode.textContent += ev.content;
+            msgs.scrollTop = msgs.scrollHeight;
+          } else if (ev.type === "sources") {
+            sources = ev.sources;
+          } else if (ev.type === "error") {
+            hadError = ev.message;
+          }
+        }
+      }
+    }
+    if (sources.length) {
+      const s = document.createElement("div");
+      s.className = "sources";
+      s.textContent = "Sources: " + sources.map(x => x.source).join(", ");
+      aiBubble.appendChild(s);
+    }
+    if (hadError) { aiBubble.classList.add("err"); aiBubble.textContent = "Error: " + hadError; }
+    pushHistory(question, textNode.textContent);
+  } catch (e) {
+    aiBubble.classList.add("err");
+    aiBubble.textContent = "Error: " + e.message;
+  } finally {
+    sendBtn.disabled = false;
+    q.focus();
+  }
+}
+
+const HISTORY_KEY = "rag_history";
+let chatHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+function pushHistory(question, answer) {
+  if (!answer) return;
+  chatHistory.push({ role: "user", content: question }, { role: "assistant", content: answer });
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(chatHistory));
+}
+function buildHistory() { return chatHistory; }
+</script>
+</body>
+</html>
