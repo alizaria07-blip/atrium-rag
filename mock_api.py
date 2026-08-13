@@ -1,8 +1,10 @@
 """A tiny mock of an OpenAI-compatible /v1 API, for local testing.
 
 Implements: GET /v1/models, POST /v1/embeddings, POST /v1/chat/completions
-(streaming). Embeddings are deterministic char-trigram hashing so that
-texts sharing words get similar vectors — enough to exercise the RAG search.
+(streaming and non-streaming). Embeddings are deterministic char-trigram
+hashing so that texts sharing words get similar vectors — enough to exercise
+the RAG search. When the chat system prompt asks for planner JSON, it returns
+a plausible read-only SQL statement so the warehouse path can be tested.
 """
 import json
 import hashlib
@@ -23,6 +25,41 @@ def embed_text(text: str) -> list[float]:
         vec[h % DIM] += 1.0
     norm = sum(x * x for x in vec) ** 0.5 or 1.0
     return [x / norm for x in vec]
+
+
+def _planner_sql(question: str) -> str:
+    q = question.lower()
+    if any(word in q for word in ("revenue", "sales", "total")):
+        return (
+            "SELECT p.category, SUM(oi.qty * oi.unit_price) AS revenue "
+            "FROM order_items oi JOIN products p ON p.id = oi.product_id "
+            "GROUP BY p.category ORDER BY revenue DESC LIMIT 5"
+        )
+    return "SELECT status, COUNT(*) AS orders FROM orders GROUP BY status"
+
+
+def _planner_reply(body: dict) -> JSONResponse:
+    user = next((m["content"] for m in body.get("messages", []) if m["role"] == "user"), "")
+    payload = {
+        "id": "chatcmpl-mock-planner",
+        "object": "chat.completion",
+        "created": 1,
+        "model": body.get("model", "mock-chat"),
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {"sql": _planner_sql(user), "reason": "Planned warehouse query (mock)"}
+                    ),
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+    }
+    return JSONResponse(payload)
 
 
 @app.get("/v1/models")
@@ -48,6 +85,27 @@ async def chat(req: Request):
     messages = body["messages"]
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user = next((m["content"] for m in messages if m["role"] == "user"), "")
+    if "Return ONLY JSON" in system:
+        return _planner_reply(body)
+    if not body.get("stream"):
+        payload = {
+            "id": "chatcmpl-mock",
+            "object": "chat.completion",
+            "created": 1,
+            "model": body.get("model", "mock-chat"),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"Mock answer. Question: {user[:40]}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+        return JSONResponse(payload)
     ctx = ""
     if "CONTEXT:" in system:
         ctx = system.split("CONTEXT:", 1)[1].strip()

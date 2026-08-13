@@ -96,3 +96,52 @@ def test_full_rag_flow(client, mock_base):
     assert any(s["source"] == "winterfell.txt" for s in sources)
     body = "".join(e["content"] for e in events if e["type"] == "delta")
     assert body
+
+
+def test_database_flow_plans_and_runs_sql(client, mock_base, tmp_path, monkeypatch):
+    """Attach a warehouse, ask in database mode: the planner must emit SQL,
+    the store must run it, and the answer must stream with the result in context."""
+    from dbstore import DatabaseHub
+
+    monkeypatch.setattr(appmod, "hub", DatabaseHub(str(tmp_path)))
+    r = client.post("/api/databases/sample")
+    assert r.status_code == 200, r.text
+    db = r.json()["database"]
+    assert db["engine"] == "sqlite"
+
+    settings = {
+        "base_url": mock_base,
+        "api_key": "x",
+        "embed_model": "mock-embed",
+        "chat_model": "mock-chat",
+    }
+    r = client.post(
+        "/api/chat",
+        json={
+            "question": "Which categories drove the most revenue?",
+            "settings": settings,
+            "history": [],
+            "mode": "database",
+            "database_id": db["id"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    events = [json.loads(f) for f in (line[5:].strip() for line in r.text.splitlines() if line.startswith("data:")) if f]
+    kinds = [e["type"] for e in events]
+    assert "delta" in kinds and "done" in kinds
+
+    sql_events = [e for e in events if e["type"] == "sql"]
+    assert sql_events, "expected a sql event"
+    ev = sql_events[0]
+    assert ev["row_count"] > 0
+    assert ev["columns"]
+    assert "order_items" in ev["sql"]
+
+    schema = client.get(f"/api/databases/{db['id']}/schema").json()
+    assert {t["name"] for t in schema["tables"]} >= {"orders", "customers", "refunds"}
+
+    preview = client.get(f"/api/databases/{db['id']}/preview/employees").json()
+    assert preview["row_count"] > 0
+
+    r = client.delete(f"/api/databases/{db['id']}")
+    assert r.status_code == 200

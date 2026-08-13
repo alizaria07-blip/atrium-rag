@@ -61,7 +61,13 @@ def extract_text(filename: str, data: bytes) -> str:
     elif kind == "docx":
         text = _from_docx(data)
     else:
-        text = data.decode("utf-8", errors="replace")
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("latin-1")
+            except Exception:
+                text = data.decode("utf-8", errors="replace")
     # Normalise whitespace a little but keep paragraph breaks.
     text = re.sub(r"\r\n", "\n", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -69,34 +75,58 @@ def extract_text(filename: str, data: bytes) -> str:
     return text.strip()
 
 
+def _split_long_paragraph(para: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split a single long paragraph into overlapping sub-chunks."""
+    step = max(1, chunk_size - overlap)
+    sub_chunks = []
+    start = 0
+    while start < len(para):
+        end = min(start + chunk_size, len(para))
+        chunk = para[start:end].strip()
+        if chunk:
+            sub_chunks.append(chunk)
+        if end >= len(para):
+            break
+        start += step
+    return sub_chunks
+
+
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
     """Split text into overlapping chunks on paragraph boundaries.
 
-    Falls back to hard character splits for very long paragraphs.
+    Falls back to windowed character splits with overlap for very long paragraphs.
     """
     text = text.strip()
     if not text:
         return []
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    raw_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not raw_paragraphs:
+        return []
+
+    # Flatten any oversized paragraphs into sub-chunks first
+    paragraphs: list[str] = []
+    for p in raw_paragraphs:
+        if len(p) > chunk_size:
+            paragraphs.extend(_split_long_paragraph(p, chunk_size, overlap))
+        else:
+            paragraphs.append(p)
+
     chunks: list[str] = []
     current = ""
     for para in paragraphs:
-        # A single paragraph longer than the chunk size: split it hard.
-        while len(para) > chunk_size:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(para[:chunk_size])
-            para = para[chunk_size:]
         if not current:
             current = para
-        elif len(current) + 1 + len(para) <= chunk_size:
+        elif len(current) + 2 + len(para) <= chunk_size:
             current += "\n\n" + para
         else:
             chunks.append(current)
-            # overlap tail of the previous chunk
-            current = para[:overlap] + "\n\n" + para if len(para) > overlap else para
+            # Retain the trailing context of the previous chunk as overlap
+            if overlap > 0 and len(current) > overlap:
+                tail = current[-overlap:].strip()
+                current = f"{tail}\n\n{para}" if tail else para
+            else:
+                current = para
 
     if current:
         chunks.append(current)

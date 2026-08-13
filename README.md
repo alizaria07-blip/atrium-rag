@@ -72,4 +72,6 @@ uvicorn mock_api:app --host 127.0.0.1 --port 59998
 Then in the app set Base URL to `http://127.0.0.1:59998/v1`, chat model
 `mock-chat`, embedding model `mock-embed`, leave the key blank. It returns
 deterministic fake embeddings and a canned streaming answer — enough to verify
-the RAG pipeline end-to-end. (Not for real use.)
+the RAG pipeline end-to-end. When you ask in Database mode it also answers the
+planner with a read-only SQL statement, so the warehouse path (schema →
+query → grounded answer) can be exercised too. (Not for real use.)

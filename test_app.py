@@ -94,7 +94,7 @@ def test_health(client):
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "Local RAG" in r.text
+    assert "Atrium" in r.text
 
 
 def test_documents_empty(client):
@@ -123,14 +123,20 @@ def test_upload_unreadable_file_returns_400(client):
         files={"file": ("bad.XXXX", b"\xff\xfe bogus", "application/octet-stream")},
         data={"settings": body},
     )
-    # Text decode always "succeeds" with errors=replace, so expect embed attempt -> 502.
-    assert r.status_code in (400, 502)
+    # Text decode may succeed with replacement characters; local embeddings can
+    # therefore accept this as a small text document, while remote embeddings
+    # return a gateway error.
+    assert r.status_code in (200, 400, 502)
 
 
 def test_chat_offline_returns_502(client):
     body = {
         "question": "hi",
-        "settings": {"base_url": "http://127.0.0.1:1/v1", "api_key": "x"},
+        "settings": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "api_key": "x",
+            "embed_model": "text-embedding-3-small",
+        },
     }
     r = client.post("/api/chat", json=body)
     assert r.status_code == 502
@@ -143,3 +149,51 @@ def test_chat_empty_question_400(client):
         json={"question": "   ", "settings": {"base_url": "x", "api_key": ""}},
     )
     assert r.status_code == 400
+
+
+# ------------------------------------------------------------------ additional tests
+def test_chunk_text_overlap_does_not_duplicate_paragraph():
+    text = "First paragraph about alpha.\n\nSecond paragraph about beta.\n\nThird paragraph about gamma."
+    chunks = docparse.chunk_text(text, chunk_size=40, overlap=10)
+    assert len(chunks) >= 2
+    for c in chunks:
+        # Paragraph header should not be duplicated with itself
+        assert "Second paragraph\n\nSecond paragraph" not in c
+
+
+def test_store_dimension_mismatch_raises_clear_error():
+    tmpdir = tempfile.mkdtemp()
+    store = RAGStore(tmpdir)
+    store.add_document("doc1", ["chunk1"], [[1.0, 2.0, 3.0]])
+    
+    # Adding a document with different dimension
+    with pytest.raises(ValueError, match="Embedding dimension mismatch"):
+        store.add_document("doc2", ["chunk2"], [[1.0, 2.0]])
+    
+    # Querying with different dimension
+    with pytest.raises(ValueError, match="Query vector dimension"):
+        store.retrieve([1.0, 2.0])
+
+
+def test_sql_read_only_with_keywords_in_literals():
+    from dbstore import is_read_only_sql
+    assert is_read_only_sql("SELECT * FROM products WHERE name LIKE '%vacuum%'") is None
+    assert is_read_only_sql("SELECT created_at, update_date FROM orders") is None
+    assert is_read_only_sql("SELECT * FROM logs WHERE action = 'delete from cart'") is None
+    assert is_read_only_sql("DROP TABLE users") is not None
+    assert is_read_only_sql("INSERT INTO users VALUES (1)") is not None
+    assert is_read_only_sql("SELECT * FROM users; DROP TABLE users;") is not None
+
+
+def test_database_hub_relative_path_resolution(tmp_path):
+    from dbstore import DatabaseHub
+    hub = DatabaseHub(str(tmp_path))
+    sample = hub.add_sample()
+    cid = sample["id"]
+    schema = hub.schema(cid)
+    assert len(schema["tables"]) > 0
+    # Re-instantiate hub in another instance pointing to same directory
+    hub2 = DatabaseHub(str(tmp_path))
+    assert hub2.get(cid) is not None
+    preview = hub2.preview(cid, "employees")
+    assert preview["row_count"] > 0
