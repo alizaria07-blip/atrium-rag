@@ -55,6 +55,8 @@ st.set_page_config(
 
 CUSTOM_CSS = """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500&family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&display=swap');
+
 /* Atrium Modern Dark Luxury Styling */
 :root {
     --bg: #141210;
@@ -67,19 +69,47 @@ CUSTOM_CSS = """
     --line: #38312b;
 }
 
+html, body, [class*="css"] {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: var(--ink);
+}
+
+h1, h2, h3, h4, .stTitle {
+    font-family: 'Fraunces', serif !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.02em;
+}
+
 [data-testid="stSidebar"] {
-    background-color: var(--surface);
+    background-color: var(--surface) !important;
     border-right: 1px solid var(--line);
+}
+
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    font-family: 'Fraunces', serif !important;
+    color: var(--ink);
 }
 
 .stButton>button {
     border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--ink);
+    font-family: 'DM Sans', sans-serif;
     transition: all 0.15s ease;
 }
 
 .stButton>button:hover {
     border-color: var(--copper);
     color: var(--copper-light);
+    background: #332b25;
+}
+
+.stButton>button[kind="primary"] {
+    background: var(--copper) !important;
+    color: #141210 !important;
+    font-weight: 600;
+    border-color: var(--copper-light) !important;
 }
 
 .thread-row {
@@ -95,23 +125,37 @@ CUSTOM_CSS = """
 .sql-badge {
     display: inline-block;
     background: rgba(201, 138, 86, 0.15);
-    color: #e2a370;
+    color: var(--copper-light);
     padding: 3px 8px;
     border-radius: 4px;
     font-size: 0.8rem;
-    font-family: monospace;
+    font-family: 'DM Mono', monospace;
     margin-bottom: 6px;
+    border: 1px solid rgba(201, 138, 86, 0.3);
 }
 
 .pill {
     display: inline-block;
     background: #2b2520;
     color: #ded7ce;
-    padding: 2px 10px;
+    padding: 3px 12px;
     border-radius: 12px;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     margin-right: 6px;
     border: 1px solid #423932;
+    font-family: 'DM Sans', sans-serif;
+}
+
+div[data-testid="stChatMessage"] {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+}
+
+code, pre {
+    font-family: 'DM Mono', monospace !important;
 }
 </style>
 """
