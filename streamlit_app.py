@@ -120,11 +120,46 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ Config & Secrets
 def _secret(key: str, default: Any) -> Any:
+    """Robustly fetch secrets from st.secrets (flat or nested) or os.environ."""
+    aliases = [key, key.lower(), key.upper()]
+    if key == "api_key":
+        aliases.extend(["OPENAI_API_KEY", "OPENROUTER_API_KEY", "API_KEY"])
+    elif key == "base_url":
+        aliases.extend(["OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "BASE_URL"])
+    elif key == "chat_model":
+        aliases.extend(["CHAT_MODEL", "MODEL"])
+    elif key == "embed_model":
+        aliases.extend(["EMBED_MODEL"])
+
+    # 1. Direct top-level st.secrets lookup
     try:
-        val = st.secrets.get(key)
-        return val if val is not None and str(val).strip() != "" else default
+        for k in aliases:
+            if k in st.secrets:
+                val = st.secrets[k]
+                if val is not None and str(val).strip() != "":
+                    return val
     except Exception:
-        return default
+        pass
+
+    # 2. Nested section lookup (e.g. [openai] or [openrouter] sections)
+    try:
+        for sec_name in ("openai", "openrouter", "general", "app", "secrets"):
+            if sec_name in st.secrets and hasattr(st.secrets[sec_name], "get"):
+                sec_dict = st.secrets[sec_name]
+                for k in aliases:
+                    val = sec_dict.get(k)
+                    if val is not None and str(val).strip() != "":
+                        return val
+    except Exception:
+        pass
+
+    # 3. Environment variables lookup
+    for k in aliases:
+        val = os.environ.get(k)
+        if val is not None and str(val).strip() != "":
+            return val
+
+    return default
 
 
 def get_default_config() -> dict:
@@ -178,6 +213,12 @@ if "active_thread_id" not in st.session_state or not any(t["id"] == st.session_s
 if "indexed_files" not in st.session_state:
     st.session_state.indexed_files = set()
 
+if "doc_uploader_nonce" not in st.session_state:
+    st.session_state.doc_uploader_nonce = 0
+
+if "uploaded_db_files" not in st.session_state:
+    st.session_state.uploaded_db_files = set()
+
 if "selected_db_id" not in st.session_state:
     st.session_state.selected_db_id = None
 
@@ -194,21 +235,37 @@ def current_thread() -> dict:
 
 
 def make_client(cfg: dict) -> OpenAI:
-    return OpenAI(base_url=cfg["base_url"].rstrip("/"), api_key=cfg["api_key"] or "n/a", timeout=300)
+    base_url = (cfg.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/")
+    headers = {}
+    if "openrouter.ai" in base_url.lower():
+        headers = {
+            "HTTP-Referer": "https://atrium-rag.streamlit.app",
+            "X-Title": "Atrium RAG",
+        }
+    return OpenAI(
+        base_url=base_url,
+        api_key=cfg.get("api_key") or "n/a",
+        default_headers=headers if headers else None,
+        timeout=300,
+    )
 
 
 def embed_texts(client: OpenAI | None, model: str, texts: list[str]) -> list[list[float]]:
     if embed_local.is_local(model):
         return embed_local.embed(texts)
     if client is None:
-        raise RuntimeError("Remote embeddings require an API client and key")
-    vectors: list[list[float]] = []
-    for start in range(0, len(texts), 64):
-        batch = texts[start : start + 64]
-        resp = client.embeddings.create(model=model, input=batch)
-        ordered = sorted(resp.data, key=lambda d: d.index)
-        vectors.extend(x.embedding for x in ordered)
-    return vectors
+        return embed_local.embed(texts)
+    try:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), 64):
+            batch = texts[start : start + 64]
+            resp = client.embeddings.create(model=model, input=batch)
+            ordered = sorted(resp.data, key=lambda d: d.index)
+            vectors.extend(x.embedding for x in ordered)
+        return vectors
+    except Exception as exc:
+        st.warning(f"Remote embedding model '{model}' failed ({exc}). Falling back to built-in local embedding.")
+        return embed_local.embed(texts)
 
 
 def extract_planner_sql(raw: str) -> tuple[str | None, str]:
@@ -249,6 +306,21 @@ def plan_sql(client: OpenAI, model: str, question: str, schema_text: str, mode: 
     )
     content = resp.choices[0].message.content if resp.choices else ""
     return extract_planner_sql(content or "")
+
+
+def render_sql_table(sql_data: dict) -> None:
+    if not sql_data:
+        return
+    if sql_data.get("error"):
+        st.error(f"SQL Error: {sql_data['error']}")
+        return
+    st.markdown(f"<div class='sql-badge'>Warehouse Query · {sql_data.get('row_count', 0)} rows</div>", unsafe_allow_html=True)
+    st.code(sql_data.get("sql", ""), language="sql")
+    rows = sql_data.get("rows") or []
+    cols = sql_data.get("columns") or []
+    if rows and cols:
+        table_data = [dict(zip(cols, r)) for r in rows]
+        st.dataframe(table_data, use_container_width=True)
 
 
 # ------------------------------------------------------------------ Sidebar: Navigation & Sources
@@ -300,11 +372,12 @@ with st.sidebar:
 
     # 2. Documents Section
     st.subheader("📚 Documents")
+    uploader_key = f"doc_uploader_{st.session_state.doc_uploader_nonce}"
     uploaded_files = st.file_uploader(
         "Upload PDF / DOCX / TXT / MD",
         type=["pdf", "docx", "txt", "md", "markdown"],
         accept_multiple_files=True,
-        key="doc_uploader",
+        key=uploader_key,
     )
 
     if uploaded_files:
@@ -334,6 +407,7 @@ with st.sidebar:
         if st.button("Clear all documents", key="clear_docs_btn"):
             store.clear()
             st.session_state.indexed_files.clear()
+            st.session_state.doc_uploader_nonce += 1
             st.rerun()
     else:
         st.caption("No documents indexed yet.")
@@ -371,13 +445,16 @@ with st.sidebar:
 
         db_file = st.file_uploader("Upload SQLite file", type=["db", "sqlite", "sqlite3"], key="db_file_uploader")
         if db_file:
-            try:
-                new_db = hub.add_sqlite_bytes(db_file.name, db_file.getvalue())
-                st.session_state.selected_db_id = new_db["id"]
-                st.success(f"Attached {db_file.name}")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Error attaching SQLite: {exc}")
+            file_sig = f"{db_file.name}_{db_file.size}"
+            if file_sig not in st.session_state.uploaded_db_files:
+                try:
+                    new_db = hub.add_sqlite_bytes(db_file.name, db_file.getvalue())
+                    st.session_state.selected_db_id = new_db["id"]
+                    st.session_state.uploaded_db_files.add(file_sig)
+                    st.success(f"Attached {db_file.name}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Error attaching SQLite: {exc}")
 
         with st.form("url_db_form"):
             db_name_in = st.text_input("Name", placeholder="Production Replica")
@@ -407,12 +484,12 @@ with st.sidebar:
 
     # 4. Connection & Model Settings
     st.subheader("⚙️ API Connection")
-    st.session_state.cfg["base_url"] = st.text_input("API Base URL", value=st.session_state.cfg["base_url"])
-    st.session_state.cfg["api_key"] = st.text_input("API Key", value=st.session_state.cfg["api_key"], type="password")
-    st.session_state.cfg["chat_model"] = st.text_input("Chat Model", value=st.session_state.cfg["chat_model"])
-    st.session_state.cfg["embed_model"] = st.text_input("Embedding Model", value=st.session_state.cfg["embed_model"])
-    st.session_state.cfg["top_k"] = st.number_input("Top K chunks", min_value=1, max_value=20, value=st.session_state.cfg["top_k"])
-    st.session_state.cfg["temperature"] = st.slider("Temperature", 0.0, 1.0, float(st.session_state.cfg["temperature"]))
+    st.session_state.cfg["base_url"] = st.text_input("API Base URL", value=st.session_state.cfg["base_url"], key="cfg_base_url")
+    st.session_state.cfg["api_key"] = st.text_input("API Key", value=st.session_state.cfg["api_key"], type="password", key="cfg_api_key")
+    st.session_state.cfg["chat_model"] = st.text_input("Chat Model", value=st.session_state.cfg["chat_model"], key="cfg_chat_model")
+    st.session_state.cfg["embed_model"] = st.text_input("Embedding Model", value=st.session_state.cfg["embed_model"], key="cfg_embed_model")
+    st.session_state.cfg["top_k"] = st.number_input("Top K chunks", min_value=1, max_value=20, value=st.session_state.cfg["top_k"], key="cfg_top_k")
+    st.session_state.cfg["temperature"] = st.slider("Temperature", 0.0, 1.0, float(st.session_state.cfg["temperature"]), key="cfg_temp")
 
     if not st.session_state.cfg["api_key"]:
         st.warning("No API key set. Add it above to ask questions.")
@@ -459,14 +536,7 @@ for msg in thread.get("messages", []):
             for step in msg["steps"]:
                 st.caption(f"⚡ {step}")
         if msg.get("sql"):
-            sql_data = msg["sql"]
-            if sql_data.get("error"):
-                st.error(f"SQL Error: {sql_data['error']}")
-            else:
-                st.markdown(f"<div class='sql-badge'>Warehouse Query · {sql_data.get('row_count', 0)} rows</div>", unsafe_allow_html=True)
-                st.code(sql_data.get("sql", ""), language="sql")
-                if sql_data.get("rows") and sql_data.get("columns"):
-                    st.dataframe(sql_data["rows"], column_config={i: col for i, col in enumerate(sql_data["columns"])}, use_container_width=True)
+            render_sql_table(msg["sql"])
         st.markdown(msg.get("content", ""))
         if msg.get("sources"):
             with st.expander(f"Grounding Sources ({len(msg['sources'])} retrieved)"):
@@ -522,7 +592,7 @@ if prompt:
                     sql, reason = plan_sql(api_client, st.session_state.cfg["chat_model"], prompt, schema_text, st.session_state.mode)
                     if sql:
                         status_steps.append(reason or "Executed warehouse query")
-                        status_holder.caption(f"⚡ Running SQL query...")
+                        status_holder.caption("⚡ Running SQL query...")
                         try:
                             result = hub.query(db_id, sql)
                             sql_payload = {
@@ -533,8 +603,7 @@ if prompt:
                                 "truncated": result.get("truncated", False),
                                 "reason": reason,
                             }
-                            st.markdown(f"<div class='sql-badge'>Warehouse Query · {result['row_count']} rows</div>", unsafe_allow_html=True)
-                            st.code(sql, language="sql")
+                            render_sql_table(sql_payload)
                         except Exception as exc:
                             sql_payload = {
                                 "sql": sql,
@@ -544,7 +613,7 @@ if prompt:
                                 "row_count": 0,
                                 "reason": reason,
                             }
-                            st.error(f"Query error: {exc}")
+                            render_sql_table(sql_payload)
             except Exception as exc:
                 status_steps.append(f"Warehouse plan error: {exc}")
 

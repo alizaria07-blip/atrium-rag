@@ -42,34 +42,27 @@ The app reads your API key from Streamlit secrets:
    base_url = "https://openrouter.ai/api/v1"
    api_key = "sk-or-..."
    chat_model = "openai/gpt-4o-mini"
-   embed_model = "openai/text-embedding-3-small"
+   embed_model = "local"
    top_k = 5
    ```
 
 3. Save. Streamlit restarts the app with the secrets available.
 
-The app will still load without secrets, but you'll get a warning in the
-sidebar and uploads/chat will refuse until an API key is set.
+The app supports standard keys (e.g. `api_key`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `base_url`, `OPENAI_BASE_URL`).
 
 ## 4. Use it
 
-- **Sidebar** → upload PDF/DOCX/TXT/MD files to index them.
-- **Main area** → ask questions; answers stream in and cite their source
-  chunks (view them under **Sources**).
+- **Sidebar** → upload PDF/DOCX/TXT/MD files to index them, or attach sample/custom SQL databases.
+- **Main area** → ask questions across documents, SQL database, or both.
 - **Clear all documents** button in the sidebar wipes the current index.
 
 ---
 
-## Notes & limitations
+## Notes & recommendations
 
-- **Ephemeral storage.** On Cloud, the vector index lives in the app process's
-  temp directory. It resets whenever the app is redeployed or scaled to zero,
-  so treat it as "upload per session" (fine for personal use).
-- **OpenRouter keys.** `openai/text-embedding-3-small` is the recommended
-  embedding model. Any OpenAI-compatible embedding endpoint works as long as
-  the chosen provider exposes `/v1/embeddings`.
-- **Security.** The API key is stored in Streamlit's secrets vault, never in
-  the repo. Never commit a real `secrets.toml`.
+- **Embeddings:** When using OpenRouter (`base_url = "https://openrouter.ai/api/v1"`), keep `embed_model = "local"`. Local embeddings run built-in deterministic hash vectors locally with zero extra API costs or external embedding dependencies. If using direct OpenAI (`https://api.openai.com/v1`), you can set `embed_model = "openai/text-embedding-3-small"`.
+- **Ephemeral storage.** On Cloud, the vector index and uploaded databases live in the app process's temporary directory. It resets whenever the app is redeployed or scaled to zero.
+- **Security.** The API key is stored in Streamlit's secrets vault, never in the repo. Never commit a real `secrets.toml`.
 - **Free-tier limits.** The free Community Cloud tier sleeps after 3 days of
   inactivity and is single-instance. That's fine for personal RAG.
 
