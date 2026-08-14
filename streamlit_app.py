@@ -445,9 +445,18 @@ with st.sidebar:
 
     doc_list = store.list_documents()
     if doc_list:
-        st.caption(f"{len(doc_list)} document(s) · {store.count_chunks()} chunks")
+        dim_label = f" ({store.dim}-dim vectors)" if store.dim else ""
+        st.caption(f"{len(doc_list)} document(s) · {store.count_chunks()} chunks{dim_label}")
         for d in doc_list:
             st.caption(f"• **{d['name']}** ({d['chunks']} passages)")
+
+        # Check if the active embedding model matches the indexed dimensions
+        is_local_cfg = embed_local.is_local(st.session_state.cfg.get("embed_model"))
+        if store.dim == 384 and not is_local_cfg:
+            st.warning("⚠️ Index uses 384-dim (`local`). Set Embedding Model to `local` or click **Clear all documents** to re-index with remote embeddings.")
+        elif store.dim and store.dim != 384 and is_local_cfg:
+            st.warning(f"⚠️ Index uses {store.dim}-dim remote vectors. Switch Embedding Model or click **Clear all documents** to use `local`.")
+
         if st.button("Clear all documents", key="clear_docs_btn"):
             store.clear()
             st.session_state.indexed_files.clear()
@@ -622,6 +631,16 @@ if prompt:
                 hits = store.retrieve(qvec, top_k=int(st.session_state.cfg["top_k"]))
                 if hits:
                     status_steps.append(f"Retrieved {len(hits)} document passages")
+            except ValueError as exc:
+                if "dimension" in str(exc).lower():
+                    st.error(
+                        f"**Embedding dimension mismatch:** {exc}\n\n"
+                        "👉 **How to fix:**\n"
+                        "- Set **Embedding Model** in the sidebar to `local` (if your documents were uploaded with local embeddings), OR\n"
+                        "- Click **Clear all documents** in the sidebar and re-upload your files with the new embedding model."
+                    )
+                else:
+                    st.error(f"Document search error: {exc}")
             except Exception as exc:
                 st.error(f"Document search error: {exc}")
 
